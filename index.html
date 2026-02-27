@@ -173,7 +173,7 @@ tbody tr:hover .row-actions{opacity:1;}
 
 /* MOBILE BOTTOM NAV */
 .mobile-nav{position:fixed;bottom:0;left:0;right:0;z-index:89;background:rgba(18,16,14,.97);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-top:1px solid var(--border);padding:6px 0 calc(6px + var(--safe-bottom));display:none;justify-content:space-around;align-items:center;}
-.mobile-nav-btn{display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:var(--text-dim);font-family:'Crimson Pro',serif;font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;padding:5px 14px;border-radius:var(--radius);transition:color .15s;touch-action:manipulation;min-width:60px;min-height:48px;justify-content:center;}
+.mobile-nav-btn{display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:none;color:var(--text-dim);font-family:'Crimson Pro',serif;font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;padding:5px 6px;border-radius:var(--radius);transition:color .15s;touch-action:manipulation;min-width:0;min-height:48px;justify-content:center;flex:1;}
 .mobile-nav-btn:active,.mobile-nav-btn.active{color:var(--accent);}
 
 /* MODALS — bottom sheet on mobile */
@@ -251,6 +251,21 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 .toast.success{border-color:rgba(76,175,125,.4);}
 .toast.error{border-color:rgba(192,57,43,.4);}
 .toast.info{border-color:rgba(201,168,76,.4);}
+
+/* PRINT */
+@media print{
+  @page{margin:12mm;}
+  body{background:#fff !important;color:#111 !important;font-size:11pt;}
+  body::before,header,.welcome-banner,.controls,.mobile-fab,.mobile-nav,.toast,.modal-overlay,.detail-overlay{display:none !important;}
+  main{max-width:none !important;margin:0 !important;padding:0 !important;}
+  .table-wrap,.card-grid,.phone-list{background:#fff !important;border:0 !important;overflow:visible !important;}
+  table{min-width:0 !important;}
+  thead tr{background:#fff !important;border-bottom:1px solid #bbb !important;}
+  th,td{color:#111 !important;border-color:#ddd !important;}
+  .badge{border-color:#bbb !important;color:#111 !important;background:#fff !important;}
+  .row-actions,.card-actions,.detail-actions,.btn{display:none !important;}
+  .table-footer{background:#fff !important;border-top:1px solid #ddd !important;color:#444 !important;}
+}
 
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-track{background:transparent;}
@@ -401,6 +416,9 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
   <button class="mobile-nav-btn" onclick="document.getElementById('search-input').focus();document.getElementById('search-input').scrollIntoView({behavior:'smooth'})">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Search
   </button>
+  <button class="mobile-nav-btn" onclick="printLibrary()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>Print
+  </button>
   <button class="mobile-nav-btn" id="mobile-status-btn">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
     <span id="mobile-status-lbl">Saved</span>
@@ -494,7 +512,7 @@ let library=[],editingId=null,viewingId=null,selectedSeasons=new Set(['all']),cu
 const SORD=['Advent','Christmas','Lent','Palm Sunday','Maundy Thursday/Good Friday','Easter','Pentecost',''];
 
 function getDevice(){const w=window.innerWidth;return w<600?'phone':w<1024?'tablet':'desktop';}
-function getActiveView(){const d=getDevice();if(d==='phone')return 'phone';if(d==='tablet')return 'grid';return currentView==='grid'?'grid':'table';}
+function getActiveView(){if(document.body.classList.contains('print-mode'))return 'table';const d=getDevice();if(d==='phone')return 'phone';if(d==='tablet')return 'grid';return currentView==='grid'?'grid':'table';}
 
 function loadStorage(){try{const r=localStorage.getItem(SK);if(r)library=JSON.parse(r);}catch(e){library=[];}}
 function saveStorage(){localStorage.setItem(SK,JSON.stringify(library));}
@@ -523,6 +541,14 @@ function saveToFile(){
   const a=document.createElement('a');a.href=URL.createObjectURL(b);
   a.download='cantus-library-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(a.href);
   saveStorage();markClean();showToast('Library saved to file','success');
+}
+
+function printLibrary(){
+  if(!library.length){showToast('Nothing to print','info');return;}
+  closeModal();closeImportModal();closeDetail();
+  document.body.classList.add('print-mode');
+  renderAll();
+  window.print();
 }
 
 function toggleSeason(s){
@@ -835,6 +861,7 @@ document.addEventListener('keydown',e=>{
 
 let rTimer;
 window.addEventListener('resize',()=>{clearTimeout(rTimer);rTimer=setTimeout(()=>renderAll(),100);});
+window.addEventListener('afterprint',()=>{document.body.classList.remove('print-mode');renderAll();});
 
 loadStorage();renderAll();
 if(library.length===0&&!localStorage.getItem(WK))document.getElementById('welcome-banner').style.display='flex';

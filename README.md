@@ -25,6 +25,8 @@ Multi-machine workflow
 Edit on Machine A → Ctrl+S → saves cantus-library-2026-02-25.json
 Copy that file to Machine B (USB, email, Drive, etc.)
 Import on Machine B → choose "Update if newer"
+
+Added print on bottom row which now has 
 +++++++++++++++++++++++++++++
 📱 Phone (under 600px) — Android & iOS
 

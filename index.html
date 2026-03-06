@@ -63,6 +63,7 @@ header{position:sticky;top:0;z-index:100;background:rgba(18,16,14,.95);backdrop-
 .status-pill .save-dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
 .status-pill.unsaved{color:var(--accent);border-color:rgba(201,168,76,.3);background:var(--accent-soft);}
 .status-pill.saved{color:var(--green);border-color:rgba(76,175,125,.3);background:var(--green-soft);}
+.status-pill.key-pill{color:var(--blue);border-color:rgba(91,155,213,.35);background:var(--blue-soft);}
 
 /* BUTTONS */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:var(--radius);font-family:'Crimson Pro',serif;font-size:.93rem;font-weight:500;cursor:pointer;transition:all .18s;border:none;letter-spacing:.02em;white-space:nowrap;-webkit-user-select:none;user-select:none;touch-action:manipulation;min-height:40px;}
@@ -357,6 +358,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
     <button class="btn btn-primary" onclick="openAddModal()">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Piece
     </button>
+    <div class="status-pill key-pill" id="key-status-pill"><span>🔐</span><span id="key-status-lbl">Key: not set</span></div>
     <div class="status-pill saved" id="desktop-status-pill"><span class="save-dot"></span><span id="desktop-status-lbl">Saved</span></div>
   </div>
 </header>
@@ -441,7 +443,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
   <button class="mobile-nav-btn" onclick="printLibrary()">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>Print
   </button>
-  <button class="mobile-nav-btn" id="mobile-status-btn">
+  <button class="mobile-nav-btn" id="mobile-status-btn" onclick="openSettings()" title="Open Settings">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
     <span id="mobile-status-lbl">Saved</span>
   </button>
@@ -904,17 +906,14 @@ let rTimer;
 window.addEventListener('resize',()=>{clearTimeout(rTimer);rTimer=setTimeout(()=>renderAll(),100);});
 window.addEventListener('afterprint',()=>{document.body.classList.remove('print-mode');renderAll();});
 
-loadStorage();renderAll();
-document.getElementById('app-version').textContent=APP_VERSION;
-if(library.length===0&&!localStorage.getItem(WK))document.getElementById('welcome-banner').style.display='flex';
-if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(()=>{});
-
 /* --- AI Scan Logic --- */
+// Main entry for camera/file scan. Validates key presence, sends image to AI, then
+// maps extracted fields into the add/edit form.
 async function handleScanFile(input) {
   const file = input.files[0];
   if (!file) return;
 
-  const apiKey = localStorage.getItem(SK_API);
+  const apiKey = getStoredApiKey();
   if (!apiKey) {
     alert("Please enter your API Key in Settings first.");
     openSettings();
@@ -925,22 +924,21 @@ async function handleScanFile(input) {
   if (loader) loader.style.display = 'flex';
   
   try {
-    const base64 = await toBase64(file);
+    // Convert image to data URL and split into mime + base64 payload for Gemini inline_data.
+    const dataUrl = await toBase64(file);
+    const match = String(dataUrl).match(/^data:(.*?);base64,(.*)$/);
+    if (!match) throw new Error('Could not read image data');
+    const mimeType = match[1] || file.type || 'image/jpeg';
+    const imageData = match[2];
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      body: JSON.stringify({ contents: [{ parts: [
-        { text: "Extract JSON: {title, composer, publisher, year, notes}" },
-        { inline_data: { mime_type: "image/jpeg", data: base64.split(',')[1] } }
-      ]}]})
-    });
-    if (!resp.ok) throw new Error('API request failed');
-    
-    const data = await resp.json();
-    const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const data = await callGeminiScan(apiKey, mimeType, imageData);
+    const aiText = (data?.candidates?.[0]?.content?.parts || [])
+      .map(p => p?.text || '')
+      .join('\n')
+      .trim();
     if (!aiText) throw new Error('No AI response');
-    const result = JSON.parse(aiText.replace(/```json/g,'').replace(/```/g,''));
+    const jsonText = extractJsonObject(aiText);
+    const result = JSON.parse(jsonText);
     
     if (result.title) document.getElementById('f-title').value = result.title;
     if (result.composer) document.getElementById('f-composer').value = result.composer;
@@ -960,6 +958,71 @@ async function cantusScanFile(input) {
   return handleScanFile(input);
 }
 
+// Tries multiple model names in order so scan still works if a model is deprecated
+// or unavailable for the current API version.
+async function callGeminiScan(apiKey, mimeType, imageData) {
+  const models = ['gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash'];
+  let lastModelError = null;
+
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: 'Read this sheet music photo and return ONLY valid JSON with keys: title, composer, publisher, year, notes. Unknown values should be empty strings.' },
+            { inline_data: { mime_type: mimeType, data: imageData } }
+          ]
+        }]
+      })
+    });
+
+    if (resp.ok) {
+      return await resp.json();
+    }
+
+    let detail = '';
+    try {
+      const err = await resp.json();
+      detail = err?.error?.message || '';
+    } catch (_) {}
+
+    // Normalize provider errors into user-friendly messages we can show in alerts/toasts.
+    const message = detail || `API request failed (${resp.status})`;
+    const modelUnavailable = resp.status === 404 || /not found for api version|not supported for generatecontent/i.test(message);
+    if (modelUnavailable) {
+      lastModelError = new Error(`Model ${model} unavailable: ${message}`);
+      continue;
+    }
+    if (resp.status === 400 && /api key not valid/i.test(message)) {
+      throw new Error('Invalid API key. Please recheck key in Settings.');
+    }
+    if (resp.status === 403) {
+      throw new Error(message || 'API key blocked by restriction (HTTP referrer/billing/API permission).');
+    }
+    if (resp.status === 429 || /quota exceeded|rate limit|free_tier_requests_limit|free_tier_input_token_count/i.test(message)) {
+      throw new Error('Gemini quota exceeded for this API key/project. Enable billing or wait for quota reset, then try again.');
+    }
+    throw new Error(message);
+  }
+
+  throw lastModelError || new Error('No compatible Gemini model available for scan.');
+}
+
+function extractJsonObject(text) {
+  // Models occasionally wrap JSON in markdown fences or extra prose.
+  // This extracts the outermost JSON object for resilient parsing.
+  const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) throw new Error('AI response was not JSON');
+  return cleaned.slice(start, end + 1);
+}
+
 function toBase64(file) {
   return new Promise(res => {
     const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
@@ -968,11 +1031,86 @@ function toBase64(file) {
 
 /* --- SETTINGS & KEY STORAGE --- */
 const SK_API = 'cantus_api_key';
+const SK_API_EXP = 'cantus_api_key_exp';
+// API key auto-expires after 8 hours for safer client-side storage.
+const API_KEY_TTL_MS = 8 * 60 * 60 * 1000;
+// Fallback store used only if localStorage is unavailable/restricted (some mobile modes).
+const settingsMemoryStore = {};
+
+// Safe storage helpers: use localStorage when available; fall back to in-memory store.
+function readSetting(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (_) {
+    return Object.prototype.hasOwnProperty.call(settingsMemoryStore, key) ? settingsMemoryStore[key] : null;
+  }
+}
+
+function writeSetting(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (_) {
+    settingsMemoryStore[key] = String(value);
+  }
+}
+
+function removeSetting(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch (_) {
+    delete settingsMemoryStore[key];
+  }
+}
+
+function clearStoredApiKey() {
+  // Deletes both key and expiry metadata, then updates visible status text.
+  removeSetting(SK_API);
+  removeSetting(SK_API_EXP);
+  const input = document.getElementById('s-api-key');
+  if (input) input.value = '';
+  refreshKeyNotice();
+}
+
+function getStoredApiKey() {
+  // Enforces TTL at read-time so expired keys are removed before any API call.
+  const key = (readSetting(SK_API) || '').trim();
+  if (!key) return '';
+  const expiresAt = parseInt(readSetting(SK_API_EXP) || '0', 10);
+  if (!expiresAt || Date.now() >= expiresAt) {
+    clearStoredApiKey();
+    return '';
+  }
+  return key;
+}
+
+function refreshKeyNotice() {
+  // Keeps Settings notice + header key badge in sync with current key state.
+  const el = document.getElementById('s-key-notice');
+  const headerLabel = document.getElementById('key-status-lbl');
+  const headerPill = document.getElementById('key-status-pill');
+  const key = (readSetting(SK_API) || '').trim();
+  const expiresAt = parseInt(readSetting(SK_API_EXP) || '0', 10);
+  if (!key || !expiresAt || Date.now() >= expiresAt) {
+    if (el) el.textContent = 'Key deletes after 8 hours and must be re-entered.';
+    if (headerLabel) headerLabel.textContent = 'Key: not set';
+    if (headerPill) headerPill.className = 'status-pill key-pill';
+    return;
+  }
+  const remainingMs = expiresAt - Date.now();
+  const hrs = Math.floor(remainingMs / (60 * 60 * 1000));
+  const mins = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+  if (el) el.textContent = `Key deletes after 8 hours and must be re-entered. Time left: ${hrs}h ${mins}m.`;
+  if (headerLabel) headerLabel.textContent = `Key: ${hrs}h ${mins}m left`;
+  if (headerPill) {
+    headerPill.className = 'status-pill key-pill';
+    if (remainingMs <= 60 * 60 * 1000) headerPill.classList.add('unsaved');
+  }
+}
 
 function openSettings() {
   document.getElementById('settings-modal').classList.add('open');
-  // Load existing key if available
-  document.getElementById('s-api-key').value = localStorage.getItem(SK_API) || '';
+  document.getElementById('s-api-key').value = getStoredApiKey();
+  refreshKeyNotice();
 }
 
 function closeSettings() {
@@ -980,11 +1118,37 @@ function closeSettings() {
 }
 
 function saveSettings() {
+  // Empty input intentionally clears stored key.
   const key = document.getElementById('s-api-key').value.trim();
-  localStorage.setItem(SK_API, key);
+  if (!key) {
+    clearStoredApiKey();
+    closeSettings();
+    showToast('No key saved');
+    return;
+  }
+  writeSetting(SK_API, key);
+  writeSetting(SK_API_EXP, String(Date.now() + API_KEY_TTL_MS));
   closeSettings();
-  showToast("Key Saved");
+  refreshKeyNotice();
+  showToast('Key saved for 8 hours');
 }
+
+function deleteKeyNow() {
+  // Manual immediate key removal requested by user.
+  const hadKey = !!(readSetting(SK_API) || '').trim();
+  clearStoredApiKey();
+  closeSettings();
+  showToast(hadKey ? 'API key deleted from this browser' : 'No API key stored in this browser');
+}
+
+setInterval(refreshKeyNotice, 60 * 1000);
+
+loadStorage();renderAll();
+getStoredApiKey();
+refreshKeyNotice();
+document.getElementById('app-version').textContent=APP_VERSION;
+if(library.length===0&&!localStorage.getItem(WK))document.getElementById('welcome-banner').style.display='flex';
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(()=>{});
 </script>
 
 <div class="modal-overlay" id="settings-modal">
@@ -996,9 +1160,11 @@ function saveSettings() {
     <div class="modal-body" style="display:block">
       <div class="field-group" style="margin-bottom:15px">
         <label>Gemini API Key</label>
-        <input type="password" id="s-api-key" placeholder="Paste your key here...">
+        <input type="password" id="s-api-key" placeholder="Paste your key here..." autocomplete="new-password" autocapitalize="none" autocorrect="off" spellcheck="false">
       </div>
-      <button class="btn btn-primary" style="width:100%" onclick="saveSettings()">Save Settings</button>
+      <div id="s-key-notice" style="font-size:.84rem;color:var(--text-dim);margin:2px 0 12px">Key deletes after 8 hours and must be re-entered.</div>
+      <button type="button" class="btn btn-primary" style="width:100%" onclick="saveSettings()">Save Settings</button>
+      <button type="button" class="btn btn-ghost" style="width:100%;margin-top:8px" onclick="deleteKeyNow()">Delete Key Now</button>
     </div>
   </div>
 </div>

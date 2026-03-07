@@ -1,4 +1,4 @@
-const CACHE = 'cantus-v4';
+const CACHE = 'cantus-v5';
 const ASSETS = ['./', './index.html', './manifest.json'];
 
 self.addEventListener('install', e => {

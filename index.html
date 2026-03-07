@@ -1031,6 +1031,7 @@ async function callClaudeWithPrompt(apiKey, mimeType, imageData, promptText) {
   const models = ['claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-3-5-sonnet-latest'];
   let lastModelError = null;
   const isDirectAnthropic = /^https:\/\/api\.anthropic\.com\//i.test(CLAUDE_API_ENDPOINT);
+  const isRelativeProxy = /^\//.test(CLAUDE_API_ENDPOINT);
 
   for (const model of models) {
     const headers = {
@@ -1038,7 +1039,7 @@ async function callClaudeWithPrompt(apiKey, mimeType, imageData, promptText) {
       'anthropic-version': '2023-06-01'
     };
     if (isDirectAnthropic) headers['x-api-key'] = apiKey;
-    else headers['x-cantus-api-key'] = apiKey;
+    else if (isRelativeProxy) headers['x-cantus-api-key'] = apiKey;
 
     let resp;
     try {
@@ -1070,7 +1071,10 @@ async function callClaudeWithPrompt(apiKey, mimeType, imageData, promptText) {
     } catch (networkErr) {
       const msg = (networkErr && networkErr.message) ? String(networkErr.message) : 'Network request failed';
       if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-        throw new Error('Could not reach Claude scan endpoint. If you are local, run proxy_server.py and keep using http://localhost:8080.');
+        if (isRelativeProxy) {
+          throw new Error('Could not reach local Claude scan endpoint. If you are local, run proxy_server.py and keep using http://localhost:8080.');
+        }
+        throw new Error('Could not reach Claude Worker endpoint. Confirm Worker URL is correct and CORS allows this site origin.');
       }
       throw networkErr;
     }

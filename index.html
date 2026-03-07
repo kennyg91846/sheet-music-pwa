@@ -459,7 +459,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
       <input type="file" id="scan-input" accept="image/*" capture="environment" style="display:none" onchange="cantusScanFile(this)">
       <div id="scan-loading" class="scan-overlay">
         <div style="font-size: 2rem; margin-bottom: 10px;">⏳</div>
-        <div style="font-family: 'Playfair Display'">Analyzing...</div>
+        <div id="scan-loading-text" style="font-family: 'Playfair Display'">Analyzing...</div>
       </div>
       <div class="field-group field-full"><label>Title *</label><input type="text" id="f-title" placeholder="e.g. A Mighty Fortress" autocomplete="off"></div>
       <div class="field-group"><label>Composer</label><input type="text" id="f-composer" placeholder="e.g. J.S. Bach" autocomplete="off"></div>
@@ -907,6 +907,17 @@ window.addEventListener('resize',()=>{clearTimeout(rTimer);rTimer=setTimeout(()=
 window.addEventListener('afterprint',()=>{document.body.classList.remove('print-mode');renderAll();});
 
 /* --- AI Scan Logic --- */
+const SCAN_MAX_EDGE = 1568;
+const SCAN_JPEG_QUALITY = 0.82;
+// Optional override for a same-origin proxy endpoint (recommended for production).
+// Example: window.CANTUS_CLAUDE_ENDPOINT = '/api/claude/messages'
+const CLAUDE_API_ENDPOINT = window.CANTUS_CLAUDE_ENDPOINT || '/api/claude/messages';
+const SCAN_VARIANTS = [
+  { label: 'top 50%', topFraction: 0.50 },
+  { label: 'top 75%', topFraction: 0.75 },
+  { label: 'full page', topFraction: 1 }
+];
+
 // Main entry for camera/file scan. Validates key presence, sends image to AI, then
 // maps extracted fields into the add/edit form.
 async function handleScanFile(input) {
@@ -921,34 +932,83 @@ async function handleScanFile(input) {
   }
 
   const loader = document.getElementById('scan-loading');
+  const loaderText = document.getElementById('scan-loading-text');
   if (loader) loader.style.display = 'flex';
+  if (loaderText) loaderText.textContent = 'Preparing image...';
   
   try {
-    // Convert image to data URL and split into mime + base64 payload for Gemini inline_data.
-    const dataUrl = await toBase64(file);
-    const match = String(dataUrl).match(/^data:(.*?);base64,(.*)$/);
-    if (!match) throw new Error('Could not read image data');
-    const mimeType = match[1] || file.type || 'image/jpeg';
-    const imageData = match[2];
+    const variants = await buildScanVariants(file);
+    let mergedResult = {};
+    let bestResult = {};
+    let bestScore = 0;
+    let lastError = null;
 
-    const data = await callGeminiScan(apiKey, mimeType, imageData);
-    const aiText = (data?.candidates?.[0]?.content?.parts || [])
-      .map(p => p?.text || '')
-      .join('\n')
-      .trim();
-    if (!aiText) throw new Error('No AI response');
-    const jsonText = extractJsonObject(aiText);
-    const result = JSON.parse(jsonText);
-    
-    if (result.title) document.getElementById('f-title').value = result.title;
-    if (result.composer) document.getElementById('f-composer').value = result.composer;
-    if (result.publisher) document.getElementById('f-publisher').value = result.publisher;
-    if (result.year) document.getElementById('f-year').value = result.year;
-    if (result.notes) document.getElementById('f-notes').value = result.notes;
+    for (let i = 0; i < variants.length; i++) {
+      const variant = variants[i];
+      if (loaderText) loaderText.textContent = `Analyzing ${variant.label}...`;
+      try {
+        const data = await callClaudeScan(apiKey, variant.mimeType, variant.imageData);
+        const result = parseScanResult(data);
+        mergedResult = mergeScanResults(mergedResult, result);
+
+        const score = getScanScore(mergedResult);
+        if (score > bestScore) {
+          bestResult = { ...mergedResult };
+          bestScore = score;
+        }
+
+        if (isScanResultSufficient(mergedResult)) break;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    if (!bestScore) {
+      throw lastError || new Error('No readable metadata found in this photo.');
+    }
+
+    if (!bestResult.voicing && variants.length) {
+      try {
+        if (loaderText) loaderText.textContent = 'Inferring voicing...';
+        // Try inference from largest context first, then tighter crops.
+        const tryOrder = [variants[variants.length - 1], variants[1], variants[0]].filter(Boolean);
+        let bestGuess = { voicing: '', confidence: 'low' };
+        for (const v of tryOrder) {
+          const guess = await inferVoicingWithClaude(apiKey, v.mimeType, v.imageData);
+          if (voicingConfidenceRank(guess.confidence) > voicingConfidenceRank(bestGuess.confidence)) {
+            bestGuess = guess;
+          }
+          if (guess.voicing && guess.confidence === 'high') break;
+        }
+
+        // If image-only inference is still weak, give Claude extra extracted context.
+        if (!shouldAcceptVoicingGuess(bestGuess.voicing, bestGuess.confidence)) {
+          const ctxGuess = await inferVoicingWithContext(
+            apiKey,
+            tryOrder[0].mimeType,
+            tryOrder[0].imageData,
+            bestResult
+          );
+          if (voicingConfidenceRank(ctxGuess.confidence) > voicingConfidenceRank(bestGuess.confidence)) {
+            bestGuess = ctxGuess;
+          }
+        }
+
+        if (shouldAcceptVoicingGuess(bestGuess.voicing, bestGuess.confidence)) {
+          bestResult.voicing = bestGuess.voicing;
+        }
+      } catch (_) {
+        // Keep scan resilient: missing inference should not fail the whole scan.
+      }
+    }
+
+    applyScanResultToForm(bestResult);
+    showToast('Scan complete','success');
     
   } catch (e) {
     alert("Scan failed: " + (e?.message || 'Unknown error'));
   } finally {
+    if (loaderText) loaderText.textContent = 'Analyzing...';
     if (loader) loader.style.display = 'none';
     input.value = '';
   }
@@ -960,26 +1020,58 @@ async function cantusScanFile(input) {
 
 // Tries multiple model names in order so scan still works if a model is deprecated
 // or unavailable for the current API version.
-async function callGeminiScan(apiKey, mimeType, imageData) {
-  const models = ['gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash'];
+async function callClaudeScan(apiKey, mimeType, imageData) {
+  const defaultPrompt = 'Extract sheet music metadata and return ONLY valid JSON with keys: title, composer, arranger, publisher, year, voicing, notes. Use empty strings for unknown values. Voicing must be one of: SATB, SAB, SSA, SSAA, TTBB, TB, Unison, 2-Part, 3-Part Mixed, SATB + Soloists, Other. Set voicing to empty string unless a voicing label is explicitly printed on the page (for example SATB, SAB, SSA, 2-Part, 3-Part Mixed). Do not infer voicing from visible staves/voices alone. Do not wrap JSON in markdown.';
+  return callClaudeWithPrompt(apiKey, mimeType, imageData, defaultPrompt);
+}
+
+async function callClaudeWithPrompt(apiKey, mimeType, imageData, promptText) {
+  const models = ['claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-3-5-sonnet-latest'];
   let lastModelError = null;
+  const isDirectAnthropic = /^https:\/\/api\.anthropic\.com\//i.test(CLAUDE_API_ENDPOINT);
 
   for (const model of models) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: 'Read this sheet music photo and return ONLY valid JSON with keys: title, composer, publisher, year, notes. Unknown values should be empty strings.' },
-            { inline_data: { mime_type: mimeType, data: imageData } }
-          ]
-        }]
-      })
-    });
+    const headers = {
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01'
+    };
+    if (isDirectAnthropic) headers['x-api-key'] = apiKey;
+    else headers['x-cantus-api-key'] = apiKey;
+
+    let resp;
+    try {
+      resp = await fetch(CLAUDE_API_ENDPOINT, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model,
+          max_tokens: 450,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: mimeType,
+                  data: imageData
+                }
+              },
+              {
+                type: 'text',
+                text: promptText
+              }
+            ]
+          }]
+        })
+      });
+    } catch (networkErr) {
+      const msg = (networkErr && networkErr.message) ? String(networkErr.message) : 'Network request failed';
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        throw new Error('Could not reach Claude scan endpoint. If you are local, run proxy_server.py and keep using http://localhost:8080.');
+      }
+      throw networkErr;
+    }
 
     if (resp.ok) {
       return await resp.json();
@@ -993,24 +1085,87 @@ async function callGeminiScan(apiKey, mimeType, imageData) {
 
     // Normalize provider errors into user-friendly messages we can show in alerts/toasts.
     const message = detail || `API request failed (${resp.status})`;
-    const modelUnavailable = resp.status === 404 || /not found for api version|not supported for generatecontent/i.test(message);
+    const modelUnavailable = resp.status === 404 || /model|not found|does not exist|unsupported/i.test(message);
     if (modelUnavailable) {
       lastModelError = new Error(`Model ${model} unavailable: ${message}`);
       continue;
     }
-    if (resp.status === 400 && /api key not valid/i.test(message)) {
+    if ((resp.status === 400 || resp.status === 401) && /api key|authentication|unauthorized|invalid x-api-key/i.test(message)) {
       throw new Error('Invalid API key. Please recheck key in Settings.');
     }
     if (resp.status === 403) {
-      throw new Error(message || 'API key blocked by restriction (HTTP referrer/billing/API permission).');
+      throw new Error(message || 'API key blocked by permission policy or account restrictions.');
     }
-    if (resp.status === 429 || /quota exceeded|rate limit|free_tier_requests_limit|free_tier_input_token_count/i.test(message)) {
-      throw new Error('Gemini quota exceeded for this API key/project. Enable billing or wait for quota reset, then try again.');
+    if (resp.status === 413 || /request too large|payload too large|32mb/i.test(message)) {
+      throw new Error('Image payload is too large for Claude API. Try a closer crop or lower photo resolution.');
+    }
+    if (resp.status === 429 || /quota|rate limit|too many requests/i.test(message)) {
+      throw new Error('Claude quota/rate limit reached for this API key. Please wait and try again.');
     }
     throw new Error(message);
   }
 
-  throw lastModelError || new Error('No compatible Gemini model available for scan.');
+  throw lastModelError || new Error('No compatible Claude model available for scan.');
+}
+
+async function inferVoicingWithClaude(apiKey, mimeType, imageData) {
+  const prompt = 'Return ONLY valid JSON with keys: voicing, confidence. Infer likely choral voicing from the page even if not explicitly printed. Allowed voicing values: SATB, SAB, SSA, SSAA, TTBB, TB, Unison, 2-Part, 3-Part Mixed, SATB + Soloists, Other, empty string. confidence must be one of: high, medium, low. If uncertain, set voicing to empty string and confidence to low.';
+  const data = await callClaudeWithPrompt(apiKey, mimeType, imageData, prompt);
+  const aiText = (data?.content || [])
+    .map(p => p?.text || '')
+    .join('\n')
+    .trim();
+  if (!aiText) return '';
+  const jsonText = extractJsonObject(aiText);
+  const parsed = JSON.parse(jsonText);
+  const voicing = normalizeVoicing((parsed?.voicing || '').toString().trim(), { allowPartGuess: true });
+  const confidence = (parsed?.confidence || '').toString().trim().toLowerCase();
+  if (!voicing) return { voicing: '', confidence: 'low' };
+  const safeConfidence = /^(high|medium|low)$/.test(confidence) ? confidence : 'low';
+  return { voicing, confidence: safeConfidence };
+}
+
+async function inferVoicingWithContext(apiKey, mimeType, imageData, fields) {
+  const ctx = {
+    title: fields?.title || '',
+    composer: fields?.composer || '',
+    arranger: fields?.arranger || '',
+    publisher: fields?.publisher || '',
+    notes: fields?.notes || ''
+  };
+  const prompt = `Return ONLY valid JSON with keys: voicing, confidence.\n` +
+    `Infer likely choral voicing using both image evidence and the extracted metadata context below.\n` +
+    `Allowed voicing values: SATB, SAB, SSA, SSAA, TTBB, TB, Unison, 2-Part, 3-Part Mixed, SATB + Soloists, Other, empty string.\n` +
+    `confidence must be one of: high, medium, low. If uncertain, set voicing to empty string and confidence to low.\n` +
+    `Context JSON: ${JSON.stringify(ctx)}`;
+
+  const data = await callClaudeWithPrompt(apiKey, mimeType, imageData, prompt);
+  const aiText = (data?.content || [])
+    .map(p => p?.text || '')
+    .join('\n')
+    .trim();
+  if (!aiText) return { voicing: '', confidence: 'low' };
+  const jsonText = extractJsonObject(aiText);
+  const parsed = JSON.parse(jsonText);
+  const voicing = normalizeVoicing((parsed?.voicing || '').toString().trim(), { allowPartGuess: true });
+  const confidence = (parsed?.confidence || '').toString().trim().toLowerCase();
+  if (!voicing) return { voicing: '', confidence: 'low' };
+  const safeConfidence = /^(high|medium|low)$/.test(confidence) ? confidence : 'low';
+  return { voicing, confidence: safeConfidence };
+}
+
+function voicingConfidenceRank(confidence) {
+  if (confidence === 'high') return 3;
+  if (confidence === 'medium') return 2;
+  return 1;
+}
+
+function shouldAcceptVoicingGuess(voicing, confidence) {
+  if (!voicing) return false;
+  if (confidence === 'high') return true;
+  // Allow medium-confidence for common ensemble labels; still reject low confidence.
+  if (confidence === 'medium' && /^(SATB|SAB|SSA|SSAA|TTBB|TB)$/.test(voicing)) return true;
+  return false;
 }
 
 function extractJsonObject(text) {
@@ -1023,9 +1178,128 @@ function extractJsonObject(text) {
   return cleaned.slice(start, end + 1);
 }
 
+function parseScanResult(data) {
+  const aiText = (data?.content || [])
+    .map(p => p?.text || '')
+    .join('\n')
+    .trim();
+  if (!aiText) throw new Error('No AI response');
+  const jsonText = extractJsonObject(aiText);
+  return normalizeScanResult(JSON.parse(jsonText));
+}
+
+function normalizeScanResult(result) {
+  const rawVoicing = (result?.voicing || '').toString().trim();
+  const notes = (result?.notes || '').toString().trim();
+  return {
+    title: (result?.title || '').toString().trim(),
+    composer: (result?.composer || '').toString().trim(),
+    arranger: (result?.arranger || '').toString().trim(),
+    publisher: (result?.publisher || '').toString().trim(),
+    year: (result?.year || '').toString().trim(),
+    voicing: normalizeVoicing(rawVoicing, { allowPartGuess: true }) || inferVoicingFromText(notes),
+    notes
+  };
+}
+
+function normalizeVoicing(v, options = {}) {
+  const allowPartGuess = options.allowPartGuess !== false;
+  const t = (v || '').toString().trim().toUpperCase().replace(/\./g, '').replace(/\s+/g, ' ');
+  const compact = t.replace(/[^A-Z0-9+]/g, '');
+  if (!t) return '';
+  if (/SATB\+SOLOISTS/.test(compact) || /SATBWITHSOLOISTS/.test(compact)) return 'SATB + Soloists';
+  if (/SATB\s*\+\s*SOLOISTS|SATB\s*WITH\s*SOLOISTS/.test(t)) return 'SATB + Soloists';
+  if (allowPartGuess && /3\s*[- ]?PART\s*MIXED|THREE\s*PART\s*MIXED/.test(t)) return '3-Part Mixed';
+  if (allowPartGuess && /2\s*[- ]?PART|TWO\s*[- ]?PART/.test(t)) return '2-Part';
+  if (/UNISON/.test(t)) return 'Unison';
+  if (/SSAA/.test(t) || /SSAA/.test(compact)) return 'SSAA';
+  if (/TTBB/.test(t) || /TTBB/.test(compact)) return 'TTBB';
+  if (/SATB/.test(t) || /SATB/.test(compact)) return 'SATB';
+  if (/SAB/.test(t) || /SAB/.test(compact)) return 'SAB';
+  if (/SSA/.test(t) || /SSA/.test(compact)) return 'SSA';
+  if (/SOPRANO/.test(t) && /ALTO/.test(t) && /TENOR/.test(t) && /BASS|BARITONE/.test(t)) return 'SATB';
+  if (/\bTB\b/.test(t)) return 'TB';
+  return '';
+}
+
+function inferVoicingFromText(text) {
+  // Notes fallback should be conservative to avoid false positives.
+  // Only infer when notes include explicit ensemble signals.
+  return normalizeVoicing(text, { allowPartGuess: false });
+}
+
+function mergeScanResults(base, next) {
+  const out = { ...base };
+  ['title', 'composer', 'arranger', 'publisher', 'year', 'voicing', 'notes'].forEach(k => {
+    if (!out[k] && next[k]) out[k] = next[k];
+  });
+  return out;
+}
+
+function getScanScore(result) {
+  return ['title', 'composer', 'arranger', 'publisher', 'year', 'voicing'].reduce((n, k) => n + (result[k] ? 1 : 0), 0);
+}
+
+function isScanResultSufficient(result) {
+  // Prefer continuing through variants until voicing is found, if available.
+  return !!result.title && !!(result.composer || result.publisher || result.year) && !!result.voicing;
+}
+
+function applyScanResultToForm(result) {
+  if (result.title) document.getElementById('f-title').value = result.title;
+  if (result.composer) document.getElementById('f-composer').value = result.composer;
+  if (result.arranger) document.getElementById('f-arranger').value = result.arranger;
+  if (result.publisher) document.getElementById('f-publisher').value = result.publisher;
+  if (result.year) document.getElementById('f-year').value = result.year;
+  if (result.voicing) {
+    const voicingSel = document.getElementById('f-voicing');
+    if ([...voicingSel.options].some(o => o.value === result.voicing)) voicingSel.value = result.voicing;
+  }
+  if (result.notes) document.getElementById('f-notes').value = result.notes;
+}
+
+async function buildScanVariants(file) {
+  const img = await fileToImage(file);
+  return SCAN_VARIANTS.map(v => buildScanVariant(img, v));
+}
+
+function buildScanVariant(img, variant) {
+  const cropHeight = Math.max(1, Math.round(img.height * variant.topFraction));
+  const longest = Math.max(img.width, cropHeight);
+  const scale = longest > SCAN_MAX_EDGE ? (SCAN_MAX_EDGE / longest) : 1;
+  const outW = Math.max(1, Math.round(img.width * scale));
+  const outH = Math.max(1, Math.round(cropHeight * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not prepare image for scan');
+  ctx.drawImage(img, 0, 0, img.width, cropHeight, 0, 0, outW, outH);
+
+  const dataUrl = canvas.toDataURL('image/jpeg', SCAN_JPEG_QUALITY);
+  const match = String(dataUrl).match(/^data:(.*?);base64,(.*)$/);
+  if (!match) throw new Error('Could not encode image for scan');
+  return {
+    label: variant.label,
+    mimeType: match[1] || 'image/jpeg',
+    imageData: match[2]
+  };
+}
+
 function toBase64(file) {
   return new Promise(res => {
     const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
+  });
+}
+
+async function fileToImage(file) {
+  const dataUrl = await toBase64(file);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not load image for scan'));
+    img.src = dataUrl;
   });
 }
 
@@ -1159,7 +1433,7 @@ if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{update
     </div>
     <div class="modal-body" style="display:block">
       <div class="field-group" style="margin-bottom:15px">
-        <label>Gemini API Key</label>
+        <label>Claude API Key</label>
         <input type="password" id="s-api-key" placeholder="Paste your key here..." autocomplete="new-password" autocapitalize="none" autocorrect="off" spellcheck="false">
       </div>
       <div id="s-key-notice" style="font-size:.84rem;color:var(--text-dim);margin:2px 0 12px">Key deletes after 8 hours and must be re-entered.</div>

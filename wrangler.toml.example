@@ -1,0 +1,16 @@
+name = "cantus-claude-proxy"
+main = "worker.js"
+compatibility_date = "2026-03-07"
+
+# Optional: set to your worker subdomain route if desired.
+# routes = [
+#   { pattern = "api.yourdomain.com/cantus/*", zone_name = "yourdomain.com" }
+# ]
+
+[vars]
+# Use a specific origin in production. Comma-separated list is supported.
+# Example: "https://yourusername.github.io"
+CORS_ALLOW_ORIGIN = "*"
+
+# Reject oversized payloads early (bytes).
+MAX_REQUEST_BYTES = "12000000"

@@ -537,7 +537,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION='v4.1';
+const APP_VERSION='v4.2';
 const SK='cantus_v2',WK='cantus_welcomed';
 let library=[],editingId=null,viewingId=null,selectedSeasons=new Set(['all']),currentSort='title',sortDir=1,isDirty=false,lastSavedTime=null,autoSaveTimer=null,currentView='table';
 const SORD=['Advent','Christmas','Lent','Palm Sunday','Maundy Thursday/Good Friday','Easter','Pentecost',''];
@@ -926,8 +926,11 @@ async function handleScanFile(input) {
   const file = input.files[0];
   if (!file) return;
 
+  const isDirectAnthropic = /^https:\/\/api\.anthropic\.com\//i.test(CLAUDE_API_ENDPOINT);
+  const isRelativeProxy = /^\//.test(CLAUDE_API_ENDPOINT);
+  const requiresClientKey = isDirectAnthropic || isRelativeProxy;
   const apiKey = getStoredApiKey();
-  if (!apiKey) {
+  if (requiresClientKey && !apiKey) {
     alert("Please enter your API Key in Settings first.");
     openSettings();
     return;
@@ -1097,7 +1100,10 @@ async function callClaudeWithPrompt(apiKey, mimeType, imageData, promptText) {
       continue;
     }
     if ((resp.status === 400 || resp.status === 401) && /api key|authentication|unauthorized|invalid x-api-key/i.test(message)) {
-      throw new Error('Invalid API key. Please recheck key in Settings.');
+      if (isDirectAnthropic || isRelativeProxy) {
+        throw new Error('Invalid API key. Please recheck key in Settings.');
+      }
+      throw new Error('Worker secret ANTHROPIC_API_KEY is invalid or missing. Update Worker secret and redeploy.');
     }
     if (resp.status === 403) {
       throw new Error(message || 'API key blocked by permission policy or account restrictions.');

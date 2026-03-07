@@ -911,7 +911,9 @@ const SCAN_MAX_EDGE = 1568;
 const SCAN_JPEG_QUALITY = 0.82;
 // Optional override for a same-origin proxy endpoint (recommended for production).
 // Example: window.CANTUS_CLAUDE_ENDPOINT = '/api/claude/messages'
-const CLAUDE_API_ENDPOINT = window.CANTUS_CLAUDE_ENDPOINT || '/api/claude/messages';
+const DEFAULT_WORKER_ENDPOINT = 'https://cantus-claude-proxy.lpckenny.workers.dev/api/claude/messages';
+const IS_LOCAL_SCAN_HOST = /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
+const CLAUDE_API_ENDPOINT = window.CANTUS_CLAUDE_ENDPOINT || (IS_LOCAL_SCAN_HOST ? '/api/claude/messages' : DEFAULT_WORKER_ENDPOINT);
 const SCAN_VARIANTS = [
   { label: 'top 50%', topFraction: 0.50 },
   { label: 'top 75%', topFraction: 0.75 },

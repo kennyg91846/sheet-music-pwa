@@ -17,9 +17,11 @@ This Worker stores your Claude key server-side and forwards scan requests.
    `wrangler login`
 3. Copy config template:
    `cp wrangler.toml.example wrangler.toml`
-4. Set your Claude key as a Worker secret:
+4. Set `CORS_ALLOW_ORIGIN` in `wrangler.toml` to your exact site origin.
+   Example: `https://kennyg91846.github.io`
+5. Set your Claude key as a Worker secret:
    `wrangler secret put ANTHROPIC_API_KEY`
-5. Deploy:
+6. Deploy:
    `wrangler deploy`
 
 After deploy, Wrangler prints your Worker URL, for example:
@@ -42,6 +44,8 @@ The app will POST scans to that URL.
 - Keep `ANTHROPIC_API_KEY` only in Worker secrets.
 - Do not commit real keys into any file.
 - Set `CORS_ALLOW_ORIGIN` to your real site origin in production.
+- Worker now hard-blocks requests if `CORS_ALLOW_ORIGIN` is blank or `*`.
+- Worker also blocks requests with no `Origin` header (for example plain curl without `Origin`).
 
 ## Local fallback
 

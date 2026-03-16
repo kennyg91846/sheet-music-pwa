@@ -337,7 +337,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 <body>
 
 <header>
-  <div class="logo"><span class="logo-mark">Cantus</span><span class="logo-sub">Sheet Music Library</span><span class="app-ver" id="app-version">v4.1</span></div>
+  <div class="logo"><span class="logo-mark">Cantus</span><span class="logo-sub">Sheet Music Library</span><span class="app-ver" id="app-version">v4.2</span></div>
   <div class="header-center">
     <div class="save-status" id="save-status"><span class="save-dot"></span><span id="save-status-text">All saved</span></div>
   </div>
@@ -353,7 +353,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
     </button>
     <button class="btn btn-ghost btn-settings" onclick="openSettings()">⚙️ Settings</button>
     <button class="btn btn-save" onclick="saveToFile()">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Save File
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export
     </button>
     <button class="btn btn-primary" onclick="openAddModal()">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Piece
@@ -368,7 +368,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
     <div class="welcome-icon">♬</div>
     <div style="flex:1">
       <div class="welcome-title">Welcome to Cantus</div>
-      <div class="welcome-text">Library lives in your browser. Hit <strong>Save File</strong> to export a JSON backup — import it on any device to sync.</div>
+      <div class="welcome-text">Library lives in your browser. Hit <strong>Export</strong> to download a JSON backup — import it on any device to sync.</div>
       <div class="welcome-actions">
         <button class="btn btn-primary btn-sm" onclick="openAddModal();dismissWelcome()">Add First Piece</button>
         <button class="btn btn-ghost btn-sm" onclick="openImportModal();dismissWelcome()">Import Data</button>
@@ -391,7 +391,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
         <input type="text" class="search-input" id="search-input" placeholder="Search title, composer, arranger…" oninput="renderAll()">
       </div>
-      <select class="filter-select" id="sort-select" onchange="renderAll()">
+      <select class="filter-select" id="sort-select" onchange="onSortChange()">
         <option value="title">Title A–Z</option>
         <option value="title-desc">Title Z–A</option>
         <option value="composer">Composer A–Z</option>
@@ -432,7 +432,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 
 <div class="mobile-nav">
   <button class="mobile-nav-btn" onclick="saveToFile()">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Save
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export
   </button>
   <button class="mobile-nav-btn" onclick="openImportModal()">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Import
@@ -558,7 +558,7 @@ function markDirty(){
   autoSaveTimer=setTimeout(()=>{if(isDirty)showToast('Reminder: unsaved changes','info');},5*60*1000);
 }
 function markClean(){
-  isDirty=false;lastSavedTime=new Date();setSS('saved','Saved to file');
+  isDirty=false;lastSavedTime=new Date();setSS('saved','Exported');
   document.getElementById('mobile-status-lbl').textContent='Saved';
   const dsp=document.getElementById('desktop-status-pill');
   dsp.className='status-pill saved';
@@ -583,7 +583,7 @@ function saveToFile(){
   const b=new Blob([JSON.stringify(library,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(b);
   a.download='cantus-library-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(a.href);
-  saveStorage();markClean();showToast('Library saved to file','success');
+  saveStorage();markClean();showToast('Library exported','success');
 }
 
 function printLibrary(){
@@ -601,26 +601,48 @@ function toggleSeason(s){
   renderAll();
 }
 
-function setSort(f){if(currentSort===f)sortDir*=-1;else{currentSort=f;sortDir=1;}document.getElementById('sort-select').value=f;renderAll();}
+function syncSortSelect(){
+  const sel=document.getElementById('sort-select');
+  if(!sel)return;
+  if(currentSort==='title'&&sortDir===-1)sel.value='title-desc';
+  else if(currentSort==='composer'&&sortDir===-1)sel.value='composer-desc';
+  else if(currentSort==='lastPerformed'&&sortDir===-1)sel.value='lastPerformed-asc';
+  else sel.value=currentSort;
+}
+
+function onSortChange(){
+  const v=document.getElementById('sort-select').value;
+  if(v==='title-desc'){currentSort='title';sortDir=-1;}
+  else if(v==='composer-desc'){currentSort='composer';sortDir=-1;}
+  else if(v==='lastPerformed-asc'){currentSort='lastPerformed';sortDir=-1;}
+  else if(v==='lastPerformed'){currentSort='lastPerformed';sortDir=1;}
+  else{currentSort=v;sortDir=1;}
+  syncSortSelect();
+  renderAll();
+}
+
+function setSort(f){if(currentSort===f)sortDir*=-1;else{currentSort=f;sortDir=1;}syncSortSelect();renderAll();}
 
 function getFiltered(){
   const q=document.getElementById('search-input').value.toLowerCase().trim();
   const vf=document.getElementById('voicing-filter').value;
+  const selectedSort=document.getElementById('sort-select')?.value||currentSort;
   return library.filter(p=>{
     if(q&&!['title','composer','arranger','publisher','notes'].some(f=>(p[f]||'').toLowerCase().includes(q)))return false;
     if(vf&&p.voicing!==vf)return false;
     if(!selectedSeasons.has('all')&&!selectedSeasons.has(p.season||''))return false;
     return true;
   }).sort((a,b)=>{
-    const d=sortDir;
-    if(currentSort==='lastPerformed'||currentSort==='lastPerformed-asc'){
+    if(selectedSort==='lastPerformed'||selectedSort==='lastPerformed-asc'){
       const da=a.lastPerformed?new Date(a.lastPerformed):new Date(0);
       const db=b.lastPerformed?new Date(b.lastPerformed):new Date(0);
-      return d*(db-da);
+      return selectedSort==='lastPerformed'?(db-da):(da-db);
     }
-    if(currentSort==='season')return d*(SORD.indexOf(a.season||'')-SORD.indexOf(b.season||''));
-    const f=currentSort.replace('-desc','').replace('-asc','');
-    return d*(a[f]||'').toLowerCase().localeCompare((b[f]||'').toLowerCase());
+    if(selectedSort==='season')return SORD.indexOf(a.season||'')-SORD.indexOf(b.season||'');
+    if(selectedSort==='title-desc')return (b.title||'').toLowerCase().localeCompare((a.title||'').toLowerCase());
+    if(selectedSort==='composer-desc')return (b.composer||'').toLowerCase().localeCompare((a.composer||'').toLowerCase());
+    const f=selectedSort.replace('-desc','').replace('-asc','');
+    return (a[f]||'').toLowerCase().localeCompare((b[f]||'').toLowerCase());
   });
 }
 
@@ -632,6 +654,7 @@ function setView(v){
 }
 
 function renderAll(){
+  syncSortSelect();
   const filtered=getFiltered();
   // voicing filter
   const vf=document.getElementById('voicing-filter'),cur=vf.value;
@@ -867,7 +890,7 @@ function showResult(el,type,title,msg,stats){
     </div>`:'');
 }
 
-function dismissWelcome(){document.getElementById('welcome-banner').style.display='none';localStorage.setItem(WK,'1');}
+function dismissWelcome(){document.getElementById('welcome-banner').style.display='none';writeSetting(WK,'1');}
 
 function loadSampleData(){
   const now=new Date().toISOString();
@@ -1433,7 +1456,7 @@ loadStorage();renderAll();
 getStoredApiKey();
 refreshKeyNotice();
 document.getElementById('app-version').textContent=APP_VERSION;
-if(library.length===0&&!localStorage.getItem(WK))document.getElementById('welcome-banner').style.display='flex';
+if(library.length===0&&!readSetting(WK))document.getElementById('welcome-banner').style.display='flex';
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(()=>{});
 </script>
 

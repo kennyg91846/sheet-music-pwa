@@ -34,13 +34,13 @@ Each record also has an auto-generated `id` (used for deduplication) and a `last
 ## Storage Architecture
 
 - **Working cache:** Browser `localStorage` — all edits write here instantly
-- **Persistent file:** Manual JSON export to the user's machine via the **Save File** button
+- **Persistent file:** Manual JSON export to the user's machine via the **Export** button
 - **No server, no cloud, no account required**
 - Data survives browser restarts via localStorage
 - JSON file is the source of truth for multi-device use
 
 ### Multi-Machine Sync Workflow
-1. Edit on Machine A → click **Save File** → downloads `cantus-library-YYYY-MM-DD.json`
+1. Edit on Machine A → click **Export** → downloads `cantus-library-YYYY-MM-DD.json`
 2. Copy JSON file to Machine B (USB, email, cloud drive, etc.)
 3. On Machine B → **Import** → choose JSON tab → select merge strategy → import
 4. Summary shows: X added · Y updated · Z skipped
@@ -108,12 +108,12 @@ Four merge strategies:
 
 ---
 
-## Save / Unsaved State
+## Export / Unsaved State
 
-- **Unsaved indicator** pulses gold in the header when changes haven't been saved to file
+- **Unsaved indicator** pulses gold in the header when changes haven't been exported
 - **5-minute reminder toast** if unsaved changes exist
 - **`beforeunload` warning** if you try to close the tab with unsaved changes
-- **Ctrl+S** (or Cmd+S) triggers Save File from anywhere
+- **Ctrl+S** (or Cmd+S) triggers Export from anywhere
 - **Ctrl+K** focuses the search box
 
 ---
@@ -189,7 +189,7 @@ Then open `http://localhost:8080/` (or LAN URL on phone). The app posts scans to
 
 ## GitHub Pages Note
 
-- Static GitHub Pages cannot reliably call Claude API directly from browser due CORS and key exposure concerns.
+- Static GitHub Pages cannot reliably call Claude API directly from browser due to CORS and key exposure concerns.
 - For scanning on deployed site, use a hosted same-origin proxy (Cloudflare Worker, serverless function, or small backend) and route `/api/claude/messages` through it.
 
 ## Cloudflare Worker Deployment (Recommended)
@@ -227,7 +227,8 @@ Yes. You should publish the Worker template files.
 ### CORS and Origin Security
 
 - Set `CORS_ALLOW_ORIGIN` in Worker config to your real app origin (for example your GitHub Pages URL).
-- Avoid leaving CORS as `*` in production unless intentionally public.
+- Worker template now hard-blocks requests if `CORS_ALLOW_ORIGIN` is blank or `*`.
+- Browser requests from unlisted origins return `403 Forbidden`.
 
 ### Cost Overview
 

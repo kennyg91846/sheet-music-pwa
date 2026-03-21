@@ -71,6 +71,10 @@ header{position:sticky;top:0;z-index:100;background:rgba(18,16,14,.95);backdrop-
 .btn-primary:hover,.btn-primary:active{background:#d4af58;box-shadow:0 3px 16px rgba(201,168,76,.35);}
 .btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border);}
 .btn-ghost:hover,.btn-ghost:active{background:var(--surface2);color:var(--text);}
+.btn-install{background:var(--blue-soft);color:var(--blue);border:1px solid rgba(91,155,213,.35);}
+.btn-install:hover,.btn-install:active{background:rgba(91,155,213,.2);color:#87bce7;}
+.btn-install.ready{box-shadow:0 0 0 1px rgba(91,155,213,.25) inset;}
+.btn-install.unavailable{opacity:.78;}
 .btn-save{background:var(--green-soft);color:var(--green);border:1px solid rgba(76,175,125,.3);}
 .btn-save:hover,.btn-save:active{background:rgba(76,175,125,.2);}
 .btn-danger{background:var(--red-soft);color:#e74c3c;border:1px solid rgba(192,57,43,.3);}
@@ -281,7 +285,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 @media(min-width:600px){
   .stats-bar{grid-template-columns:repeat(4,1fr);}
   .header-center{display:none;}
-  .header-actions .btn-ghost:not(.btn-settings),.header-actions .btn-save,.status-pill{display:none;}
+  .header-actions .btn-ghost:not(.btn-settings):not(.btn-install),.header-actions .btn-save,.status-pill{display:none;}
   .modal{border-radius:var(--radius-xl);max-width:600px;margin:auto;}
   .modal-overlay{align-items:center;}
   .modal-handle{display:none;}
@@ -311,7 +315,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
   .empty-sub{font-size:1rem;}
   .logo-sub{display:none;}
   .header-center{display:none;}
-  .header-actions .btn-ghost:not(.btn-settings),.header-actions .btn-save,.status-pill{display:none;}
+  .header-actions .btn-ghost:not(.btn-settings):not(.btn-install),.header-actions .btn-save,.status-pill{display:none;}
   .stats-bar{grid-template-columns:repeat(2,1fr);}
   .stat-value{font-size:1.55rem;}
   .controls{padding:11px;}
@@ -337,11 +341,14 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 <body>
 
 <header>
-  <div class="logo"><span class="logo-mark">Cantus</span><span class="logo-sub">Sheet Music Library</span><span class="app-ver" id="app-version">v4.2</span></div>
+  <div class="logo"><span class="logo-mark">Cantus</span><span class="logo-sub">Sheet Music Library</span><span class="app-ver" id="app-version">v4.3</span></div>
   <div class="header-center">
     <div class="save-status" id="save-status"><span class="save-dot"></span><span id="save-status-text">All saved</span></div>
   </div>
   <div class="header-actions">
+    <button class="btn btn-ghost btn-install" id="install-btn" onclick="installApp()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Install
+    </button>
     <button class="btn btn-ghost" onclick="focusSearch()">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Search
     </button>
@@ -537,10 +544,89 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION='v4.2';
+const APP_VERSION='v4.3';
 const SK='cantus_v2',WK='cantus_welcomed';
 let library=[],editingId=null,viewingId=null,selectedSeasons=new Set(['all']),currentSort='title',sortDir=1,isDirty=false,lastSavedTime=null,autoSaveTimer=null,currentView='table';
 const SORD=['Advent','Christmas','Lent','Palm Sunday','Maundy Thursday/Good Friday','Easter','Pentecost',''];
+let deferredInstallPrompt=null;
+
+function isStandaloneMode(){
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+}
+
+function isIosSafari(){
+  const ua=navigator.userAgent||'';
+  const isIOS=/iPad|iPhone|iPod/i.test(ua);
+  const isSafari=/Safari/i.test(ua)&&!/CriOS|FxiOS|EdgiOS/i.test(ua);
+  return isIOS&&isSafari;
+}
+
+function isDesktopSafari(){
+  const ua=navigator.userAgent||'';
+  const isMac=/Macintosh|Mac OS X/i.test(ua);
+  const isSafari=/Safari/i.test(ua)&&!/Chrome|Chromium|Edg|OPR|Firefox/i.test(ua);
+  return isMac&&isSafari;
+}
+
+function refreshInstallButton(){
+  const btn=document.getElementById('install-btn');
+  if(!btn)return;
+  btn.classList.remove('ready','unavailable');
+  if(isStandaloneMode()){btn.style.display='none';return;}
+
+  btn.style.display='inline-flex';
+
+  if(deferredInstallPrompt){
+    btn.classList.add('ready');
+    btn.title='Install Cantus';
+    return;
+  }
+
+  if(isIosSafari()){
+    btn.classList.add('unavailable');
+    btn.title='Install from Safari Share menu';
+    return;
+  }
+
+  if(isDesktopSafari()){
+    btn.classList.add('unavailable');
+    btn.title='Install from Safari File menu';
+    return;
+  }
+
+  btn.classList.add('unavailable');
+  btn.title='Install prompt may appear after engagement on secure origin';
+}
+
+async function installApp(){
+  if(isStandaloneMode()){showToast('Cantus is already installed','info');return;}
+
+  if(deferredInstallPrompt){
+    const promptEvent=deferredInstallPrompt;
+    deferredInstallPrompt=null;
+    promptEvent.prompt();
+    try{await promptEvent.userChoice;}catch(_){/* no-op */}
+    refreshInstallButton();
+    return;
+  }
+
+  if(isIosSafari()){
+    alert('To install on iPhone/iPad: tap Share, then "Add to Home Screen".');
+    return;
+  }
+
+  if(isDesktopSafari()){
+    alert('To install on macOS Safari: use File -> Add to Dock.');
+    return;
+  }
+
+  if(!window.isSecureContext){
+    alert('Install is unavailable on insecure origins. Run the app from https:// or http://localhost to enable PWA install prompts.');
+    return;
+  }
+
+  showToast('Install prompt not ready yet. Try reloading after a little use.','info');
+}
 
 function getDevice(){const w=window.innerWidth;return w<600?'phone':w<1024?'tablet':'desktop';}
 function getActiveView(){if(document.body.classList.contains('print-mode'))return 'table';const d=getDevice();if(d==='phone')return 'phone';if(d==='tablet')return 'grid';return currentView==='grid'?'grid':'table';}
@@ -923,6 +1009,18 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();saveToFile();}
   if((e.ctrlKey||e.metaKey)&&e.key==='k'){e.preventDefault();focusSearch();}
   if(e.key==='Escape'){closeModal();closeImportModal();closeDetail();}
+});
+
+window.addEventListener('beforeinstallprompt',e=>{
+  e.preventDefault();
+  deferredInstallPrompt=e;
+  refreshInstallButton();
+});
+
+window.addEventListener('appinstalled',()=>{
+  deferredInstallPrompt=null;
+  showToast('Cantus installed','success');
+  refreshInstallButton();
 });
 
 let rTimer;
@@ -1458,6 +1556,7 @@ refreshKeyNotice();
 document.getElementById('app-version').textContent=APP_VERSION;
 if(library.length===0&&!readSetting(WK))document.getElementById('welcome-banner').style.display='flex';
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(()=>{});
+refreshInstallButton();
 </script>
 
 <div class="modal-overlay" id="settings-modal">

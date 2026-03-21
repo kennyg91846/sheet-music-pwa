@@ -1,5 +1,15 @@
-const CACHE = 'cantus-v5';
-const ASSETS = ['./', './index.html', './manifest.json'];
+const CACHE = 'cantus-v6';
+const ASSETS = [
+  './',
+  './index.html',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon-192-maskable.png',
+  './icons/icon-512-maskable.png',
+  './icons/icon-192.svg',
+  './icons/icon-512.svg'
+];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));

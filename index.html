@@ -510,6 +510,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
           <label class="radio-opt"><input type="radio" name="merge" value="replace"><span class="radio-label"><strong>Replace entire library</strong>Discard current and load fresh</span></label>
         </div>
       </div>
+      <div class="welcome-actions" style="margin-top:10px">
+        <button class="btn btn-ghost btn-sm" onclick="runImportPreview('json')">Preview Import</button>
+        <button class="btn btn-primary btn-sm" onclick="applyPendingImport('json')">Apply Import</button>
+      </div>
       <div class="import-result" id="json-result"></div>
     </div>
     <div class="import-panel" id="tab-csv">
@@ -520,6 +524,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
       <div class="csv-help"><strong>Required column headers (row 1):</strong>
         <code>title, composer, arranger, publisher, year, voicing, season, lastPerformed, copies, notes</code>
         Include an <code>id</code> column for deduplication. CSV is always additive.
+      </div>
+      <div class="welcome-actions" style="margin-top:10px">
+        <button class="btn btn-ghost btn-sm" onclick="runImportPreview('csv')">Preview Import</button>
+        <button class="btn btn-primary btn-sm" onclick="applyPendingImport('csv')">Apply Import</button>
       </div>
       <div class="import-result" id="csv-result"></div>
     </div>
@@ -908,52 +916,123 @@ function switchTab(t){
   document.getElementById('tab-json').classList.toggle('active',t==='json');
   document.getElementById('tab-csv').classList.toggle('active',t==='csv');
 }
+const pendingImports={json:null,csv:null};
+
 function onDragOver(e,id){e.preventDefault();document.getElementById(id).classList.add('dragover');}
 function onDragLeave(id){document.getElementById(id).classList.remove('dragover');}
 function onFileDrop(e,type){e.preventDefault();onDragLeave(type+'-drop');const f=e.dataTransfer.files[0];if(f)processFile(f,type);}
 function onFileSelect(e,type){const f=e.target.files[0];if(f)processFile(f,type);e.target.value='';}
-function processFile(file,type){const r=new FileReader();r.onload=e=>{type==='json'?importJSON(e.target.result):importCSV(e.target.result);};r.readAsText(file);}
+function processFile(file,type){
+  const r=new FileReader();
+  r.onload=e=>{
+    pendingImports[type]=e.target.result;
+    runImportPreview(type);
+  };
+  r.readAsText(file);
+}
+
+function runImportPreview(type){
+  const raw=pendingImports[type];
+  const el=document.getElementById(type+'-result');
+  if(!raw){showResult(el,'error','No file selected','Choose a file first.');return;}
+  if(type==='json')previewJSON(raw);
+  else previewCSV(raw);
+}
+
+function applyPendingImport(type){
+  const raw=pendingImports[type];
+  const el=document.getElementById(type+'-result');
+  if(!raw){showResult(el,'error','No file selected','Choose a file first.');return;}
+  if(type==='json')importJSON(raw);
+  else importCSV(raw);
+}
+
+function previewJSON(raw){
+  const el=document.getElementById('json-result');
+  try{
+    const strategy=document.querySelector('input[name="merge"]:checked').value;
+    const stats=evaluateJSONImport(raw,strategy,false);
+    showResult(el,'success','Dry-run preview',null,stats);
+  }catch(e){showResult(el,'error','Invalid JSON',e.message||'Could not parse the file.');}
+}
 
 function importJSON(raw){
   const el=document.getElementById('json-result');
-  let data;try{data=JSON.parse(raw);}catch(e){showResult(el,'error','Invalid JSON','Could not parse the file.');return;}
-  if(!Array.isArray(data)){showResult(el,'error','Wrong format','Expected an array of pieces.');return;}
-  const strategy=document.querySelector('input[name="merge"]:checked').value;
+  try{
+    const strategy=document.querySelector('input[name="merge"]:checked').value;
+    const stats=evaluateJSONImport(raw,strategy,true);
+    saveStorage();markDirty();renderAll();
+    showResult(el,'success','Import complete',null,stats);
+    showToast(`${stats.added} added · ${stats.updated} updated · ${stats.skipped} skipped`,'success');
+  }catch(e){showResult(el,'error','Invalid JSON',e.message||'Could not parse the file.');}
+}
+
+function evaluateJSONImport(raw,strategy,applyChanges){
+  let data;
+  try{data=JSON.parse(raw);}catch(_){throw new Error('Could not parse the file.');}
+  if(!Array.isArray(data))throw new Error('Expected an array of pieces.');
   let added=0,updated=0,skipped=0;
-  if(strategy==='replace'){library=data.map(ensureId);added=data.length;}
-  else data.forEach(incoming=>{
-    const p=ensureId({...incoming});
+
+  if(strategy==='replace'){
+    if(applyChanges)library=data.map(ensureId);
+    added=data.length;
+    return {added,updated,skipped};
+  }
+
+  data.forEach((incoming,i)=>{
+    const p=applyChanges?ensureId({...incoming}):({...incoming,id:incoming.id||`preview_${i}`});
     const existing=library.find(x=>x.id===p.id);
-    if(!existing){library.push(p);added++;}
-    else if(strategy==='overwrite'){Object.assign(existing,p);updated++;}
-    else if(strategy==='newer'){if(new Date(p.lastModified||0)>new Date(existing.lastModified||0)){Object.assign(existing,p);updated++;}else skipped++;}
-    else skipped++;
+    if(!existing){
+      if(applyChanges)library.push(p);
+      added++;
+    }else if(strategy==='overwrite'){
+      if(applyChanges)Object.assign(existing,p);
+      updated++;
+    }else if(strategy==='newer'){
+      if(new Date(p.lastModified||0)>new Date(existing.lastModified||0)){
+        if(applyChanges)Object.assign(existing,p);
+        updated++;
+      }else skipped++;
+    }else skipped++;
   });
-  saveStorage();markDirty();renderAll();
-  showResult(el,'success','Import complete',null,{added,updated,skipped});
-  showToast(`${added} added · ${updated} updated · ${skipped} skipped`,'success');
+
+  return {added,updated,skipped};
+}
+
+function previewCSV(raw){
+  const el=document.getElementById('csv-result');
+  try{
+    const stats=evaluateCSVImport(raw,false);
+    showResult(el,'success','Dry-run preview',null,stats);
+  }catch(e){showResult(el,'error','CSV Error',e.message);}
 }
 
 function importCSV(raw){
   const el=document.getElementById('csv-result');
   try{
-    const rows=parseCSV(raw);if(rows.length<2)throw new Error('File appears empty');
-    const headers=rows[0].map(h=>h.toLowerCase().trim()),col=h=>headers.indexOf(h);
-    if(col('title')===-1)throw new Error('Missing required "title" column');
-    let added=0,skipped=0;
-    rows.slice(1).forEach(row=>{
-      if(row.every(c=>!c.trim()))return;
-      const csvId=col('id')!==-1?row[col('id')]?.trim():null;
-      if(csvId&&library.find(x=>x.id===csvId)){skipped++;return;}
-      const g=h=>col(h)!==-1?row[col(h)]?.trim()||'':'';
-      const piece={id:(csvId&&csvId.length>3)?csvId:genId(),title:g('title'),composer:g('composer'),arranger:g('arranger'),publisher:g('publisher'),year:g('year'),voicing:g('voicing'),season:g('season'),lastPerformed:g('lastperformed'),copies:g('copies'),notes:g('notes'),lastModified:new Date().toISOString()};
-      if(!piece.title){skipped++;return;}
-      library.push(piece);added++;
-    });
+    const stats=evaluateCSVImport(raw,true);
     saveStorage();markDirty();renderAll();
-    showResult(el,'success','CSV imported',null,{added,updated:0,skipped});
-    showToast(`CSV: ${added} added, ${skipped} skipped`,'success');
+    showResult(el,'success','CSV imported',null,stats);
+    showToast(`CSV: ${stats.added} added, ${stats.skipped} skipped`,'success');
   }catch(e){showResult(el,'error','CSV Error',e.message);}
+}
+
+function evaluateCSVImport(raw,applyChanges){
+  const rows=parseCSV(raw);if(rows.length<2)throw new Error('File appears empty');
+  const headers=rows[0].map(h=>h.toLowerCase().trim()),col=h=>headers.indexOf(h);
+  if(col('title')===-1)throw new Error('Missing required "title" column');
+  let added=0,skipped=0;
+  rows.slice(1).forEach(row=>{
+    if(row.every(c=>!c.trim()))return;
+    const csvId=col('id')!==-1?row[col('id')]?.trim():null;
+    if(csvId&&library.find(x=>x.id===csvId)){skipped++;return;}
+    const g=h=>col(h)!==-1?row[col(h)]?.trim()||'':'';
+    const piece={id:(csvId&&csvId.length>3)?csvId:genId(),title:g('title'),composer:g('composer'),arranger:g('arranger'),publisher:g('publisher'),year:g('year'),voicing:g('voicing'),season:g('season'),lastPerformed:g('lastperformed'),copies:g('copies'),notes:g('notes'),lastModified:new Date().toISOString()};
+    if(!piece.title){skipped++;return;}
+    if(applyChanges)library.push(piece);
+    added++;
+  });
+  return {added,updated:0,skipped};
 }
 
 function parseCSV(text){

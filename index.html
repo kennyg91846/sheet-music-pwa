@@ -313,8 +313,11 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
   .welcome-text{font-size:1.02rem;}
   .stat-label{font-size:.72rem;}
   .empty-sub{font-size:1rem;}
+  header{height:auto;min-height:calc(60px + var(--safe-top));align-items:flex-start;flex-wrap:wrap;padding-bottom:8px;}
   .logo-sub{display:none;}
   .header-center{display:none;}
+  .logo{width:100%;}
+  .header-actions{width:100%;margin-top:8px;flex-wrap:wrap;justify-content:flex-start;}
   .header-actions .btn-ghost:not(.btn-settings):not(.btn-install),.header-actions .btn-save,.status-pill{display:none;}
   .stats-bar{grid-template-columns:repeat(2,1fr);}
   .stat-value{font-size:1.55rem;}
@@ -336,6 +339,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 /* AI Scanning Styles /* AI Scanning Button at Top lines 360-362*/
 .btn-scan { background: var(--surface3); color: var(--accent); border: 1px solid var(--accent); margin-bottom: 10px; width: 100%; cursor: pointer; padding: 10px; border-radius: 8px; font-family: inherit; font-size: 0.9rem; }
 .scan-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 999; display: none; flex-direction: column; align-items: center; justify-content: center; color: var(--accent); }
+.scan-error{display:none;max-width:340px;margin-top:12px;padding:12px;background:var(--surface2);border:1px solid rgba(192,57,43,.45);border-radius:var(--radius);box-shadow:var(--shadow-sm);}
+.scan-error.show{display:block;}
+.scan-error-msg{color:#f0c5c0;font-size:.9rem;line-height:1.45;}
+.scan-error-actions{display:flex;gap:8px;margin-top:10px;justify-content:flex-end;flex-wrap:wrap;}
 </style>
 </head>
 <body>
@@ -380,6 +387,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
         <button class="btn btn-primary btn-sm" onclick="openAddModal();dismissWelcome()">Add First Piece</button>
         <button class="btn btn-ghost btn-sm" onclick="openImportModal();dismissWelcome()">Import Data</button>
         <button class="btn btn-ghost btn-sm" onclick="loadSampleData();dismissWelcome()">Load Sample Data</button>
+        <span id="welcome-key-cta-slot"></span>
       </div>
     </div>
     <button class="welcome-dismiss" onclick="dismissWelcome()">✕</button>
@@ -467,6 +475,13 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
       <div id="scan-loading" class="scan-overlay">
         <div style="font-size: 2rem; margin-bottom: 10px;">⏳</div>
         <div id="scan-loading-text" style="font-family: 'Playfair Display'">Analyzing...</div>
+        <div id="scan-error" class="scan-error" role="alert" aria-live="assertive">
+          <div id="scan-error-msg" class="scan-error-msg"></div>
+          <div class="scan-error-actions">
+            <button id="scan-error-primary-btn" type="button" class="btn btn-primary btn-sm" onclick="handleScanErrorPrimaryAction()">Retry</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="dismissScanError()">Close</button>
+          </div>
+        </div>
       </div>
       <div class="field-group field-full"><label>Title *</label><input type="text" id="f-title" placeholder="e.g. A Mighty Fortress" autocomplete="off"></div>
       <div class="field-group"><label>Composer</label><input type="text" id="f-composer" placeholder="e.g. J.S. Bach" autocomplete="off"></div>
@@ -549,12 +564,28 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
   </div>
 </div>
 
+<!-- CONFIRM MODAL -->
+<div class="modal-overlay" id="confirm-overlay" onclick="ooc(event,'confirm-overlay',closeConfirmModal)">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-handle"></div>
+    <div class="modal-header"><span class="modal-title">Confirm Delete</span><button class="modal-close" onclick="closeConfirmModal()">✕</button></div>
+    <div class="modal-body" style="display:block">
+      <div id="confirm-message" style="color:var(--text-muted);line-height:1.5;font-size:.95rem"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeConfirmModal()">Cancel</button>
+      <button class="btn btn-danger" id="confirm-primary-btn" onclick="runConfirmAction()">Delete</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 const APP_VERSION='v4.3';
 const SK='cantus_v2',WK='cantus_welcomed';
 let library=[],editingId=null,viewingId=null,selectedSeasons=new Set(['all']),currentSort='title',sortDir=1,isDirty=false,lastSavedTime=null,autoSaveTimer=null,currentView='table';
+let pendingConfirmAction=null;
 const SORD=['Advent','Christmas','Lent','Palm Sunday','Maundy Thursday/Good Friday','Easter','Pentecost',''];
 let deferredInstallPrompt=null;
 
@@ -768,7 +799,7 @@ function renderContent(filtered){
   const view=getActiveView();
   const area=document.getElementById('content-area');
   if(filtered.length===0){
-    area.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)"><div class="empty-state"><div class="empty-icon">♩</div><div class="empty-title">${library.length===0?'Your library is empty':'No pieces match your filters'}</div><div class="empty-sub">${library.length===0?'Add your first piece or import existing data':'Try adjusting your search or filters'}</div></div></div>`;
+    area.innerHTML=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg)"><div class="empty-state"><div class="empty-icon">♩</div><div class="empty-title">${library.length===0?'Your library is empty':'No pieces match your filters'}</div><div class="empty-sub">${library.length===0?'Add your first piece or import existing data':'Try adjusting your search or filters'}</div>${library.length===0?'':'<button class="btn btn-ghost" style="margin-top:12px" onclick="document.getElementById(\'search-input\').value=\'\';document.getElementById(\'voicing-filter\').value=\'\';toggleSeason(\'all\');renderAll();">Clear filters</button>'}</div></div>`;
     const rc=document.getElementById('results-count');if(rc)rc.textContent='';return;
   }
   if(view==='table')rTable(filtered,area);
@@ -889,8 +920,11 @@ function savePiece(){
 }
 
 function deletePiece(id){
-  if(!confirm('Remove this piece?'))return;
-  library=library.filter(x=>x.id!==id);saveStorage();markDirty();renderAll();showToast('Piece removed');
+  const piece=library.find(x=>x.id===id);if(!piece)return;
+  confirmModal(`Remove "${piece.title||'this piece'}"?`,()=>{
+    library=library.filter(x=>x.id!==id);saveStorage();markDirty();renderAll();showToast('Piece removed');
+    if(viewingId===id)closeDetail();
+  });
 }
 
 function openDetail(id){
@@ -907,7 +941,24 @@ function openDetail(id){
 }
 function closeDetail(){document.getElementById('detail-overlay').classList.remove('open');}
 function editFromDetail(){closeDetail();openEditModal(viewingId);}
-function deleteFromDetail(){deletePiece(viewingId);closeDetail();}
+function deleteFromDetail(){deletePiece(viewingId);}
+
+function confirmModal(message,onConfirm){
+  pendingConfirmAction=typeof onConfirm==='function'?onConfirm:null;
+  document.getElementById('confirm-message').textContent=message||'Are you sure?';
+  document.getElementById('confirm-overlay').classList.add('open');
+}
+
+function closeConfirmModal(){
+  document.getElementById('confirm-overlay').classList.remove('open');
+  pendingConfirmAction=null;
+}
+
+function runConfirmAction(){
+  const action=pendingConfirmAction;
+  closeConfirmModal();
+  if(action)action();
+}
 
 function openImportModal(){document.getElementById('import-overlay').classList.add('open');['json-result','csv-result'].forEach(id=>document.getElementById(id).className='import-result');}
 function closeImportModal(){document.getElementById('import-overlay').classList.remove('open');}
@@ -1112,7 +1163,15 @@ const SCAN_JPEG_QUALITY = 0.82;
 // Optional override for a same-origin proxy endpoint (recommended for production).
 // Example: window.CANTUS_CLAUDE_ENDPOINT = '/api/claude/messages'
 const DEFAULT_WORKER_ENDPOINT = 'https://cantus-claude-proxy.lpckenny.workers.dev/api/claude/messages';
-const IS_LOCAL_SCAN_HOST = /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
+function isPrivateIpv4(hostname) {
+  const m = String(hostname || '').match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return false;
+  const a = Number(m[1]), b = Number(m[2]);
+  return a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);
+}
+const IS_LOCAL_SCAN_HOST = /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname) ||
+  /\.local$/i.test(window.location.hostname) ||
+  isPrivateIpv4(window.location.hostname);
 const CLAUDE_API_ENDPOINT = window.CANTUS_CLAUDE_ENDPOINT || (IS_LOCAL_SCAN_HOST ? '/api/claude/messages' : DEFAULT_WORKER_ENDPOINT);
 const SCAN_VARIANTS = [
   { label: 'top 50%', topFraction: 0.50 },
@@ -1131,15 +1190,17 @@ async function handleScanFile(input) {
   const requiresClientKey = isDirectAnthropic || isRelativeProxy;
   const apiKey = getStoredApiKey();
   if (requiresClientKey && !apiKey) {
-    alert("Please enter your API Key in Settings first.");
+    showToast('Please enter your API Key in Settings first.','error');
     openSettings();
+    input.value = '';
     return;
   }
 
   const loader = document.getElementById('scan-loading');
-  const loaderText = document.getElementById('scan-loading-text');
+  let hadError = false;
+  clearScanError();
   if (loader) loader.style.display = 'flex';
-  if (loaderText) loaderText.textContent = 'Preparing image...';
+  setScanLoadingText('Preparing image...');
   
   try {
     const variants = await buildScanVariants(file);
@@ -1150,7 +1211,7 @@ async function handleScanFile(input) {
 
     for (let i = 0; i < variants.length; i++) {
       const variant = variants[i];
-      if (loaderText) loaderText.textContent = `Analyzing ${variant.label}...`;
+      setScanLoadingText(`Analyzing ${variant.label}...`);
       try {
         const data = await callClaudeScan(apiKey, variant.mimeType, variant.imageData);
         const result = parseScanResult(data);
@@ -1174,7 +1235,7 @@ async function handleScanFile(input) {
 
     if (!bestResult.voicing && variants.length) {
       try {
-        if (loaderText) loaderText.textContent = 'Inferring voicing...';
+        setScanLoadingText('Inferring voicing...');
         // Try inference from largest context first, then tighter crops.
         const tryOrder = [variants[variants.length - 1], variants[1], variants[0]].filter(Boolean);
         let bestGuess = { voicing: '', confidence: 'low' };
@@ -1211,12 +1272,71 @@ async function handleScanFile(input) {
     showToast('Scan complete','success');
     
   } catch (e) {
-    alert("Scan failed: " + (e?.message || 'Unknown error'));
+    hadError = true;
+    const message = 'Scan failed: ' + (e?.message || 'Unknown error');
+    showToast(message,'error');
+    const isKeyError = /api key|authentication|unauthorized|invalid x-api-key|invalid api key/i.test(message);
+    showScanError(message, { action: isKeyError ? 'settings' : 'retry' });
   } finally {
-    if (loaderText) loaderText.textContent = 'Analyzing...';
-    if (loader) loader.style.display = 'none';
+    setScanLoadingText('Analyzing...');
+    if (loader && !hadError) loader.style.display = 'none';
     input.value = '';
   }
+}
+
+function setScanLoadingText(text) {
+  const loaderText = document.getElementById('scan-loading-text');
+  if (loaderText) loaderText.textContent = text;
+}
+
+function clearScanError() {
+  const box = document.getElementById('scan-error');
+  const msg = document.getElementById('scan-error-msg');
+  const primaryBtn = document.getElementById('scan-error-primary-btn');
+  if (msg) msg.textContent = '';
+  if (primaryBtn) primaryBtn.textContent = 'Retry';
+  if (box) box.classList.remove('show');
+}
+
+function showScanError(message, options = {}) {
+  const loader = document.getElementById('scan-loading');
+  const box = document.getElementById('scan-error');
+  const msg = document.getElementById('scan-error-msg');
+  const primaryBtn = document.getElementById('scan-error-primary-btn');
+  const action = options.action === 'settings' ? 'settings' : 'retry';
+
+  if (loader) loader.style.display = 'flex';
+  if (msg) msg.textContent = message;
+  if (primaryBtn) {
+    primaryBtn.textContent = action === 'settings' ? 'Open Settings' : 'Retry';
+    primaryBtn.dataset.action = action;
+  }
+  if (box) box.classList.add('show');
+}
+
+function handleScanErrorPrimaryAction() {
+  const primaryBtn = document.getElementById('scan-error-primary-btn');
+  const action = primaryBtn?.dataset?.action || 'retry';
+  if (action === 'settings') {
+    dismissScanError();
+    openSettings();
+    return;
+  }
+  retryScanFromError();
+}
+
+function dismissScanError() {
+  clearScanError();
+  const loader = document.getElementById('scan-loading');
+  if (loader) loader.style.display = 'none';
+}
+
+function retryScanFromError() {
+  dismissScanError();
+  const input = document.getElementById('scan-input');
+  if (!input) return;
+  input.value = '';
+  input.click();
 }
 
 async function cantusScanFile(input) {
@@ -1580,6 +1700,7 @@ function refreshKeyNotice() {
     if (el) el.textContent = 'Key deletes after 8 hours and must be re-entered.';
     if (headerLabel) headerLabel.textContent = 'Key: not set';
     if (headerPill) headerPill.className = 'status-pill key-pill';
+    renderWelcomeApiKeyCta();
     return;
   }
   const remainingMs = expiresAt - Date.now();
@@ -1591,6 +1712,19 @@ function refreshKeyNotice() {
     headerPill.className = 'status-pill key-pill';
     if (remainingMs <= 60 * 60 * 1000) headerPill.classList.add('unsaved');
   }
+  renderWelcomeApiKeyCta();
+}
+
+function renderWelcomeApiKeyCta() {
+  const slot = document.getElementById('welcome-key-cta-slot');
+  if (!slot) return;
+
+  if (getStoredApiKey()) {
+    slot.innerHTML = '';
+    return;
+  }
+
+  slot.innerHTML = '<button class="btn btn-ghost btn-sm" onclick="openSettings()">Set Claude API Key</button>';
 }
 
 function openSettings() {

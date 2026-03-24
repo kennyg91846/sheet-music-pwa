@@ -142,7 +142,8 @@ Four merge strategies:
 ### API Key Handling (Current)
 - Key is entered via **Settings** and stored locally with 8-hour TTL.
 - Key can be deleted immediately using **Delete Key Now**.
-- For production security, server-side key storage is still recommended.
+- In local/LAN mode (`http://localhost:8080` or private LAN IP), scans use the key stored in Settings.
+- In GitHub Pages + Cloudflare Worker mode, scans can run with no client key if the Worker has `ANTHROPIC_API_KEY` configured.
 
 ---
 
@@ -184,6 +185,10 @@ Then open `http://localhost:8080/` (or LAN URL on phone). The app posts scans to
 - `Invalid API key`: check key in Settings.
 - `Image payload is too large`: retake/tighten image or reduce source resolution.
 - Blank/missing voicing: retake image with visible voicing labels or set voicing manually.
+
+### Scan Error UX
+- Scan failures now show an in-overlay error panel instead of a blocking browser alert.
+- Primary action adapts by error type: **Open Settings** for key/auth errors, **Retry** for transient failures.
 
 ---
 
@@ -229,12 +234,7 @@ Yes. You should publish the Worker template files.
 - Set `CORS_ALLOW_ORIGIN` in Worker config to your real app origin (for example your GitHub Pages URL).
 - Worker template now hard-blocks requests if `CORS_ALLOW_ORIGIN` is blank or `*`.
 - Browser requests from unlisted origins return `403 Forbidden`.
-
-### Cost Overview
-
-- GitHub Pages: free (public repo)
-- Cloudflare Worker: typically free at small volume (check current Cloudflare pricing)
-- Claude API: main variable cost, based on image tokens and request volume
+- Origin allowlists control where requests come from, not who the person is; use server-side auth/rate limits/caps for stronger abuse control.
 
 ---
 

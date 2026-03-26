@@ -324,8 +324,10 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
   .header-actions .btn-ghost:not(.btn-settings):not(.btn-install),.header-actions .btn-save,.status-pill{display:none;}
   .stats-bar{grid-template-columns:repeat(2,1fr);}
   .stat-value{font-size:1.55rem;}
-  .controls{padding:11px;}
-  .filter-select{display:none;}
+  .controls{padding:11px;position:sticky;top:var(--header-height,72px);z-index:96;box-shadow:0 10px 28px rgba(0,0,0,.28);}
+  .controls-row{gap:6px;}
+  .search-wrap{flex:1 0 100%;}
+  .filter-select{display:block;flex:1 1 calc(50% - 3px);min-width:0;}
   .modal-body{grid-template-columns:1fr;}
   .mobile-fab{display:flex;}
   .mobile-nav{display:flex;}
@@ -588,6 +590,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 <script>
 const APP_VERSION='v7';
 const SK='cantus_v2',WK='cantus_welcomed',SK_UPDATE_SNAPSHOT='cantus_v2_update_snapshot';
+const VOICING_OPTIONS=['SATB','SAB','SSA','SSAA','TTBB','TB','Unison','2-Part','3-Part Mixed','SATB + Soloists','Other'];
 let library=[],editingId=null,viewingId=null,selectedSeasons=new Set(['all']),currentSort='title',sortDir=1,isDirty=false,lastSavedTime=null,autoSaveTimer=null,currentView='table';
 let pendingConfirmAction=null;
 const SORD=['Advent','Christmas','Lent','Palm Sunday','Maundy Thursday/Good Friday','Easter','Pentecost',''];
@@ -641,6 +644,12 @@ function refreshInstallButton(){
 
   btn.classList.add('unavailable');
   btn.title='Install prompt may appear after engagement on secure origin';
+}
+
+function syncHeaderHeightVar(){
+  const header=document.querySelector('header');
+  if(!header)return;
+  document.documentElement.style.setProperty('--header-height',header.offsetHeight+'px');
 }
 
 async function installApp(){
@@ -847,7 +856,8 @@ function renderAll(){
   const filtered=getFiltered();
   // voicing filter
   const vf=document.getElementById('voicing-filter'),cur=vf.value;
-  const vs=[...new Set(library.map(p=>p.voicing).filter(Boolean))].sort();
+  const knownVoicings=library.map(p=>p.voicing).filter(Boolean);
+  const vs=[...new Set([...VOICING_OPTIONS,...knownVoicings])];
   vf.innerHTML='<option value="">All Voicings</option>'+vs.map(v=>`<option value="${esc(v)}"${v===cur?' selected':''}>${esc(v)}</option>`).join('');
   // stats
   document.getElementById('stat-total').textContent=library.length;
@@ -1317,7 +1327,7 @@ function initConnectivityLifecycle(){
 }
 
 let rTimer;
-window.addEventListener('resize',()=>{clearTimeout(rTimer);rTimer=setTimeout(()=>renderAll(),100);});
+window.addEventListener('resize',()=>{clearTimeout(rTimer);rTimer=setTimeout(()=>{syncHeaderHeightVar();renderAll();},100);});
 window.addEventListener('afterprint',()=>{document.body.classList.remove('print-mode');renderAll();});
 
 /* --- AI Scan Logic --- */
@@ -1938,6 +1948,7 @@ if(library.length===0&&!readSetting(WK))document.getElementById('welcome-banner'
 initServiceWorkerLifecycle();
 initConnectivityLifecycle();
 refreshInstallButton();
+syncHeaderHeightVar();
 </script>
 
 <div class="modal-overlay" id="settings-modal">

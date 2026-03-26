@@ -64,6 +64,9 @@ header{position:sticky;top:0;z-index:100;background:rgba(18,16,14,.95);backdrop-
 .status-pill.unsaved{color:var(--accent);border-color:rgba(201,168,76,.3);background:var(--accent-soft);}
 .status-pill.saved{color:var(--green);border-color:rgba(76,175,125,.3);background:var(--green-soft);}
 .status-pill.key-pill{color:var(--blue);border-color:rgba(91,155,213,.35);background:var(--blue-soft);}
+.status-pill.connectivity-online{color:var(--green);border-color:rgba(76,175,125,.3);background:var(--green-soft);}
+.status-pill.connectivity-offline{color:var(--text-dim);border-color:rgba(168,152,128,.35);background:rgba(168,152,128,.12);}
+.status-pill.connectivity-offline .save-dot{animation:blink 1.6s infinite;}
 
 /* BUTTONS */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:var(--radius);font-family:'Crimson Pro',serif;font-size:.93rem;font-weight:500;cursor:pointer;transition:all .18s;border:none;letter-spacing:.02em;white-space:nowrap;-webkit-user-select:none;user-select:none;touch-action:manipulation;min-height:40px;}
@@ -372,6 +375,7 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
     <button class="btn btn-primary" onclick="openAddModal()">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Piece
     </button>
+    <div class="status-pill connectivity-online" id="connectivity-pill"><span class="save-dot"></span><span id="connectivity-lbl">Online</span></div>
     <div class="status-pill key-pill" id="key-status-pill"><span>🔐</span><span id="key-status-lbl">Key: not set</span></div>
     <div class="status-pill saved" id="desktop-status-pill"><span class="save-dot"></span><span id="desktop-status-lbl">Saved</span></div>
   </div>
@@ -583,11 +587,13 @@ textarea{resize:vertical;min-height:80px;line-height:1.5;}
 
 <script>
 const APP_VERSION='v4.3';
-const SK='cantus_v2',WK='cantus_welcomed';
+const SK='cantus_v2',WK='cantus_welcomed',SK_UPDATE_SNAPSHOT='cantus_v2_update_snapshot';
 let library=[],editingId=null,viewingId=null,selectedSeasons=new Set(['all']),currentSort='title',sortDir=1,isDirty=false,lastSavedTime=null,autoSaveTimer=null,currentView='table';
 let pendingConfirmAction=null;
 const SORD=['Advent','Christmas','Lent','Palm Sunday','Maundy Thursday/Good Friday','Easter','Pentecost',''];
 let deferredInstallPrompt=null;
+let swRegistration=null,swUpdatePromptShown=false,swReloadPending=false,swUpdateInFlight=false;
+let storageLoadOk=true;
 
 function isStandaloneMode(){
   return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
@@ -670,8 +676,66 @@ async function installApp(){
 function getDevice(){const w=window.innerWidth;return w<600?'phone':w<1024?'tablet':'desktop';}
 function getActiveView(){if(document.body.classList.contains('print-mode'))return 'table';const d=getDevice();if(d==='phone')return 'phone';if(d==='tablet')return 'grid';return currentView==='grid'?'grid':'table';}
 
-function loadStorage(){try{const r=localStorage.getItem(SK);if(r)library=JSON.parse(r);}catch(e){library=[];}}
+function parseLibraryPayload(raw){
+  try{const parsed=JSON.parse(raw);return Array.isArray(parsed)?parsed:null;}catch(_){return null;}
+}
+
+function loadStorage(){
+  storageLoadOk=true;
+  try{
+    const raw=localStorage.getItem(SK);
+    if(!raw){library=[];return;}
+    const parsed=parseLibraryPayload(raw);
+    if(!parsed){library=[];storageLoadOk=false;return;}
+    library=parsed;
+  }catch(_){library=[];storageLoadOk=false;}
+}
 function saveStorage(){localStorage.setItem(SK,JSON.stringify(library));}
+
+function createUpdateSnapshot(reason){
+  try{
+    const payload=localStorage.getItem(SK)??JSON.stringify(library);
+    const snapshot={
+      reason:reason||'update',
+      savedAt:Date.now(),
+      version:APP_VERSION,
+      payloadLength:payload.length,
+      payload
+    };
+    localStorage.setItem(SK_UPDATE_SNAPSHOT,JSON.stringify(snapshot));
+    return true;
+  }catch(_){
+    return false;
+  }
+}
+
+function restoreLibraryFromUpdateSnapshotIfNeeded(){
+  const raw=localStorage.getItem(SK_UPDATE_SNAPSHOT);
+  if(!raw)return false;
+
+  let snapshot;
+  try{snapshot=JSON.parse(raw);}catch(_){localStorage.removeItem(SK_UPDATE_SNAPSHOT);return false;}
+
+  const hasPrimaryData=localStorage.getItem(SK)!==null;
+  if(hasPrimaryData&&storageLoadOk)return false;
+  if(!snapshot||typeof snapshot.payload!=='string'){localStorage.removeItem(SK_UPDATE_SNAPSHOT);return false;}
+
+  const parsed=parseLibraryPayload(snapshot.payload);
+  if(!parsed){localStorage.removeItem(SK_UPDATE_SNAPSHOT);return false;}
+
+  try{
+    localStorage.setItem(SK,snapshot.payload);
+    library=parsed;
+    storageLoadOk=true;
+    return true;
+  }catch(_){
+    return false;
+  }
+}
+
+function clearUpdateSnapshot(){
+  try{localStorage.removeItem(SK_UPDATE_SNAPSHOT);}catch(_){/* no-op */}
+}
 
 function markDirty(){
   isDirty=true;setSS('unsaved','Unsaved changes');
@@ -1152,6 +1216,105 @@ window.addEventListener('appinstalled',()=>{
   showToast('Cantus installed','success');
   refreshInstallButton();
 });
+
+function updateConnectivityIndicator(){
+  const pill=document.getElementById('connectivity-pill');
+  const label=document.getElementById('connectivity-lbl');
+  if(!pill||!label)return;
+  if(navigator.onLine){
+    pill.className='status-pill connectivity-online';
+    label.textContent='Online';
+    return;
+  }
+  pill.className='status-pill connectivity-offline';
+  label.textContent='Offline';
+}
+
+function promptForWaitingWorker(worker){
+  if(!worker||swUpdatePromptShown)return;
+  swUpdatePromptShown=true;
+  const applyNow=window.confirm('A newer Cantus update is ready. Update now? Your library in this browser will be preserved.');
+  if(!applyNow){
+    showToast('Update ready. It will apply next launch.','info');
+    swUpdatePromptShown=false;
+    return;
+  }
+  if(!createUpdateSnapshot('service-worker-update')){
+    showToast('Update blocked: could not create safety snapshot. Export your data first.','error');
+    swUpdatePromptShown=false;
+    return;
+  }
+  swReloadPending=true;
+  worker.postMessage({type:'SKIP_WAITING'});
+  setTimeout(()=>{if(swReloadPending)window.location.reload();},1800);
+}
+
+function maybePromptForWaitingUpdate(reg){
+  if(reg&&reg.waiting&&navigator.serviceWorker.controller)promptForWaitingWorker(reg.waiting);
+}
+
+function watchInstallingWorker(worker,reg){
+  if(!worker)return;
+  worker.addEventListener('statechange',()=>{
+    if(worker.state==='installed'&&navigator.serviceWorker.controller)maybePromptForWaitingUpdate(reg);
+  });
+}
+
+async function checkForAppUpdate(source='manual'){
+  if(!swRegistration||swUpdateInFlight)return;
+  if(!navigator.onLine&&source!=='startup')return;
+  swUpdateInFlight=true;
+  try{
+    await swRegistration.update();
+    maybePromptForWaitingUpdate(swRegistration);
+  }catch(_){
+    // Ignore update probe failures when network is unstable.
+  }finally{
+    swUpdateInFlight=false;
+  }
+}
+
+function initServiceWorkerLifecycle(){
+  if(!('serviceWorker' in navigator))return;
+
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{
+    if(swReloadPending){
+      swReloadPending=false;
+      window.location.reload();
+    }
+  });
+
+  navigator.serviceWorker.register('sw.js',{updateViaCache:'none'})
+    .then(reg=>{
+      swRegistration=reg;
+      maybePromptForWaitingUpdate(reg);
+      if(reg.installing)watchInstallingWorker(reg.installing,reg);
+      reg.addEventListener('updatefound',()=>watchInstallingWorker(reg.installing,reg));
+      checkForAppUpdate('startup');
+    })
+    .catch(()=>{});
+}
+
+function initConnectivityLifecycle(){
+  updateConnectivityIndicator();
+
+  window.addEventListener('online',()=>{
+    updateConnectivityIndicator();
+    showToast('Back online. Checking for updates...','info');
+    checkForAppUpdate('reconnect');
+  });
+
+  window.addEventListener('offline',()=>{
+    updateConnectivityIndicator();
+    showToast('Offline mode active','info');
+  });
+
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden)checkForAppUpdate('visibility');
+  });
+
+  window.addEventListener('focus',()=>checkForAppUpdate('focus'));
+}
 
 let rTimer;
 window.addEventListener('resize',()=>{clearTimeout(rTimer);rTimer=setTimeout(()=>renderAll(),100);});
@@ -1763,12 +1926,17 @@ function deleteKeyNow() {
 
 setInterval(refreshKeyNotice, 60 * 1000);
 
-loadStorage();renderAll();
+loadStorage();
+const recoveredFromSnapshot=restoreLibraryFromUpdateSnapshotIfNeeded();
+renderAll();
+if(recoveredFromSnapshot)showToast('Library recovered after update safety check.','success');
+else if(storageLoadOk)clearUpdateSnapshot();
 getStoredApiKey();
 refreshKeyNotice();
 document.getElementById('app-version').textContent=APP_VERSION;
 if(library.length===0&&!readSetting(WK))document.getElementById('welcome-banner').style.display='flex';
-if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).catch(()=>{});
+initServiceWorkerLifecycle();
+initConnectivityLifecycle();
 refreshInstallButton();
 </script>
 
